@@ -32,7 +32,7 @@ export const METHOD_DESC = {
 // Exported as a plain object — consumers read it, only the functions below write it.
 
 export const GS = {
-  mode:          'curated',    // 'curated' | 'campaign'
+  mode:          'curated',    // 'curated' | 'campaign' | 'usa'
   round:         1,
   method:        'plurality',
 
@@ -70,7 +70,7 @@ function buildBallots() {
 
 /**
  * Initialise (or reset) the game for the given mode.
- * @param {'curated'|'campaign'} mode
+ * @param {'curated'|'campaign'|'usa'} mode
  */
 export function initGame(mode = 'curated') {
   GS.mode         = mode;
@@ -84,7 +84,7 @@ export function initGame(mode = 'curated') {
 
   GS.ballots = buildBallots();
 
-  if (mode === 'campaign') {
+  if (mode === 'campaign' || mode === 'usa') {
     const cfg = CAMPAIGN_ROUNDS[0];
     GS.accuracy      = cfg.accuracy;
     GS.budget        = cfg.budget;
@@ -114,7 +114,7 @@ export function setCuratedAccuracy(newAccuracy) {
  * Polls regenerate; ballots and prior manipulations persist.
  */
 export function advanceRound() {
-  if (GS.mode !== 'campaign' || GS.round >= CAMPAIGN_ROUNDS.length) return;
+  if ((GS.mode !== 'campaign' && GS.mode !== 'usa') || GS.round >= CAMPAIGN_ROUNDS.length) return;
 
   GS.round++;
   const cfg = CAMPAIGN_ROUNDS[GS.round - 1];

@@ -10,19 +10,66 @@ import {
 import { PLAYER_ACTIONS }                                  from './actions.js';
 import { computeAllMethods }                               from './voting.js';
 import { renderFeedback }                                  from './feedback.js';
+import {
+  USA_MAP, initUSAMode, startDistrict,
+  recordDistrictResult, returnToMap,
+}                                                          from './usaMode.js';
+import {
+  STATES, STATE_BY_ID, stateWinner, nationalScores, nationalLeader,
+}                                                          from './usaData.js';
 
 // ── UI-only state ─────────────────────────────────────────────────────────────
 
 export const UI = {
-  selectedPollId: null,
+  selectedPollId:  null,
+  pollPrediction:  null,   // snapshot of poll-based results saved just before election runs
 };
+
+// ── Fixed deck slot order (3 candidates → 6 permutations) ────────────────────
+// Grouped by first-choice: alice cols 1-2, bob cols 3-4, carol cols 5-6
+const RANKING_SLOTS = [
+  ['alice', 'bob',   'carol'],
+  ['alice', 'carol', 'bob'  ],
+  ['bob',   'alice', 'carol'],
+  ['bob',   'carol', 'alice'],
+  ['carol', 'alice', 'bob'  ],
+  ['carol', 'bob',   'alice'],
+];
+
+const CAND_HEADERS = [
+  { id: 'alice', label: 'Alice first' },
+  { id: 'bob',   label: 'Bob first'   },
+  { id: 'carol', label: 'Carol first' },
+];
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 export function renderAll() {
   renderControls();
+
+  // Breadcrumb: only during USA district play
+  const isUSADistrict = GS.mode === 'usa' && USA_MAP.view === 'district';
+  const existingBc = document.getElementById('district-breadcrumb');
+  if (!isUSADistrict && existingBc) existingBc.remove();
+
+  const isUSAMapView = GS.mode === 'usa' && USA_MAP.view === 'map';
+
+  // Toggle between USA map and normal game UI
+  document.querySelector('.main-layout').style.display     = isUSAMapView ? 'none' : '';
+  document.getElementById('usa-map-view').style.display    = isUSAMapView ? ''     : 'none';
+  document.getElementById('results-preview').style.display = isUSAMapView ? 'none' : '';
+  document.getElementById('poll-standings').style.display  = isUSAMapView ? 'none' : '';
+
+  if (isUSAMapView) {
+    renderUSAMap();
+    renderRunButton();
+    return;
+  }
+
+  // Normal game UI
   renderPollGrid();
   renderPollStandings();
+  renderResultsPreview();
   renderActionPanel();
   renderBudget();
   renderRunButton();
@@ -35,23 +82,54 @@ function renderControls() {
   renderRoundOrAccuracy();
   renderMethodSelector();
   renderHUDLeader();
+  renderSubtitle();
+}
+
+function renderSubtitle() {
+  const el = document.querySelector('.subtitle');
+  if (!el) return;
+  if (GS.mode === 'usa' && USA_MAP.view === 'map') {
+    el.innerHTML = 'Playing as <strong>Alice</strong> · capture districts · win states · dominate the nation';
+  } else if (GS.mode === 'usa' && USA_MAP.view === 'district') {
+    const state = STATE_BY_ID[USA_MAP.activeStateId];
+    el.innerHTML = `Playing as <strong>Alice</strong> · ${state?.name || ''} District ${USA_MAP.districtIndex + 1} · plurality vote`;
+  } else {
+    el.innerHTML = 'Playing as <strong>Alice</strong> · manipulate polls to win · not all polls are real';
+  }
 }
 
 function renderModeSelector() {
   const el = document.getElementById('mode-selector');
   el.innerHTML = '';
-  ['curated', 'campaign'].forEach(m => {
+  const modes = [
+    { id: 'curated',  label: 'Classic'       },
+    { id: 'campaign', label: 'Campaign Trail' },
+    { id: 'usa',      label: 'USA Map'        },
+  ];
+  modes.forEach(({ id, label }) => {
     const btn = document.createElement('button');
-    btn.className = 'mode-btn' + (GS.mode === m ? ' active' : '');
-    btn.textContent = m === 'curated' ? 'Classic' : 'Campaign Trail';
-    btn.dataset.mode = m;
+    btn.className = 'mode-btn' + (GS.mode === id ? ' active' : '');
+    btn.textContent = label;
+    btn.dataset.mode = id;
     btn.addEventListener('click', () => {
-      if (GS.mode === m) return;
-      addLog(`// switched to ${m} mode`, '');
-      initGame(m);
+      if (GS.mode === id) return;
+      if (id === 'usa') {
+        // Enter USA overworld — don't reset USA_MAP results
+        initUSAMode();
+        initGame('usa');
+        UI.selectedPollId = null;
+        UI.pollPrediction  = null;
+        document.getElementById('feedback-panel').innerHTML = '';
+        document.getElementById('result-area').innerHTML    = '';
+        renderAll();
+        return;
+      }
+      addLog(`// switched to ${id} mode`, '');
+      initGame(id);
       UI.selectedPollId = null;
+      UI.pollPrediction  = null;
       document.getElementById('feedback-panel').innerHTML = '';
-      resetLogEntry(m);
+      resetLogEntry(id);
       renderAll();
     });
     el.appendChild(btn);
@@ -68,6 +146,9 @@ function resetLogEntry(mode) {
 function renderRoundOrAccuracy() {
   const el = document.getElementById('round-accuracy');
   el.innerHTML = '';
+
+  // USA map view: nothing to show here
+  if (GS.mode === 'usa' && USA_MAP.view === 'map') return;
 
   if (GS.mode === 'campaign') {
     const cfg = CAMPAIGN_ROUNDS[GS.round - 1];
@@ -120,7 +201,19 @@ function accuracyHint(acc) {
 }
 
 function renderMethodSelector() {
-  const el = document.getElementById('method-selector');
+  const el   = document.getElementById('method-selector');
+  const desc = document.getElementById('method-desc');
+  const row  = document.querySelector('.method-desc-row');
+
+  // USA mode always uses plurality — hide the selector
+  if (GS.mode === 'usa') {
+    el.innerHTML = '';
+    if (desc) desc.textContent = '';
+    if (row)  row.style.display = 'none';
+    return;
+  }
+  if (row) row.style.display = '';
+
   el.innerHTML = '';
   METHODS.forEach(m => {
     const btn = document.createElement('button');
@@ -135,13 +228,29 @@ function renderMethodSelector() {
     el.appendChild(btn);
   });
 
-  const desc = document.getElementById('method-desc');
   if (desc) desc.textContent = METHOD_DESC[GS.method];
 }
 
 function renderHUDLeader() {
   const el = document.getElementById('hud-leader');
   if (!el) return;
+
+  // USA map view: show national leader instead of poll leader
+  if (GS.mode === 'usa' && USA_MAP.view === 'map') {
+    const leader = nationalLeader(USA_MAP.results);
+    el.innerHTML = '';
+    if (!leader) return;
+    const cand = CAND_BY_ID[leader];
+    const dot  = document.createElement('span');
+    dot.className = 'leader-dot';
+    dot.style.background = cand ? cand.color : '#888';
+    const text = document.createElement('span');
+    text.innerHTML = `National leader: <strong style="color:${cand?.cssVar || '#aaa'}">${cand?.name || leader}</strong>`;
+    el.appendChild(dot);
+    el.appendChild(text);
+    return;
+  }
+
   const { scores, winner } = computeAllMethods(GS.polls.filter(p => !p.removed)
     .map(p => ({ ranking: p.displayedRanking, removed: false })))[GS.method];
 
@@ -158,15 +267,31 @@ function renderHUDLeader() {
 
 // ── Poll grid (deck view) ─────────────────────────────────────────────────────
 
-export function renderPollGrid() {
+export function renderPollGrid(animate = true) {
   const grid = document.getElementById('poll-grid');
   grid.innerHTML = '';
 
+  // Render candidate column headers
+  const headersEl = document.getElementById('deck-headers');
+  if (headersEl) {
+    headersEl.innerHTML = '';
+    CAND_HEADERS.forEach(({ id, label }) => {
+      const c = CAND_BY_ID[id];
+      const cell = document.createElement('div');
+      cell.className = 'deck-header-cell';
+      cell.style.color            = c.color;
+      cell.style.borderColor      = c.color + '55';
+      cell.style.backgroundColor  = c.color + '14';
+      cell.textContent = label;
+      headersEl.appendChild(cell);
+    });
+  }
+
   const activeCount = GS.polls.filter(p => !p.removed).length;
   const countEl = document.getElementById('poll-count-label');
-  if (countEl) countEl.textContent = `(${activeCount} active poll cards)`;
+  if (countEl) countEl.textContent = `(${activeCount} active)`;
 
-  // Group polls by their displayed ranking
+  // Group polls by current displayed ranking
   const groups = new Map();
   GS.polls.forEach(poll => {
     const key = poll.displayedRanking.join('>');
@@ -176,18 +301,19 @@ export function renderPollGrid() {
     groups.get(key).polls.push(poll);
   });
 
-  // Render decks sorted by active size (largest first)
-  [...groups.values()]
-    .sort((a, b) => {
-      const aActive = a.polls.filter(p => !p.removed).length;
-      const bActive = b.polls.filter(p => !p.removed).length;
-      return bActive - aActive;
-    })
-    .forEach(({ ranking, polls }) => {
-      grid.appendChild(buildDeck(ranking, polls));
-    });
+  // Render all 6 fixed slots; only add deal animation when game state changes
+  RANKING_SLOTS.forEach((ranking, i) => {
+    const key   = ranking.join('>');
+    const group = groups.get(key);
+    const deck  = buildDeck(ranking, group ? group.polls : []);
+    if (animate) {
+      deck.style.setProperty('--deal-delay', `${i * 65}ms`);
+      deck.classList.add('deck-dealing');
+    }
+    grid.appendChild(deck);
+  });
 
-  // After election: auto-expand all decks to reveal cards
+  // After election: auto-expand all non-empty decks to reveal cards
   if (GS.over) {
     requestAnimationFrame(() => {
       grid.querySelectorAll('.deck-scroll').forEach(el => {
@@ -252,79 +378,102 @@ function renderPollStandings() {
 }
 
 function buildDeck(ranking, polls) {
-  const firstCand          = CAND_BY_ID[ranking[0]];
-  const manipulatedCount   = polls.filter(p => p.wasManipulated).length;
+  const isEmpty          = polls.length === 0;
+  const firstCand        = CAND_BY_ID[ranking[0]];
+  const manipulatedCount = polls.filter(p => p.wasManipulated).length;
+  const activeCount      = polls.filter(p => !p.removed).length;
 
   const deck = document.createElement('div');
-  deck.className = 'deck';
+  deck.className = 'deck' + (isEmpty ? ' deck-empty' : '');
 
-  // ── Preview card (the visible "top of the deck") ──────────────────────────
+  // ── Preview card ──────────────────────────────────────────────────────────
   const preview = document.createElement('div');
-  preview.className = 'deck-preview-card';
-  // Per-deck accent colour for hover border, uses CSS custom property
-  if (firstCand) preview.style.setProperty('--deck-accent', firstCand.color);
+  preview.className = 'deck-preview-card' + (isEmpty ? ' empty' : '');
+  if (firstCand && !isEmpty) preview.style.setProperty('--deck-accent', firstCand.color);
 
-  // Count + edit badge (switches to real/fake reveal after election)
+  // Badge: count/edit info, or real/fake breakdown after election
   const badge = document.createElement('div');
   badge.className = 'deck-badge';
-  const activeCount = polls.filter(p => !p.removed).length;
-  if (GS.over) {
-    const realCount = polls.filter(p => !p.removed && !p.isFake).length;
-    const fakeCount = polls.filter(p => !p.removed && p.isFake).length;
-    badge.innerHTML =
-      (realCount > 0 ? `<span class="deck-real">${realCount} real</span>` : '') +
-      (fakeCount > 0 ? `<span class="deck-fake">${fakeCount} fake</span>` : '');
-  } else {
-    badge.innerHTML =
-      `<span class="deck-count">×${activeCount}</span>` +
-      (manipulatedCount > 0
-        ? `<span class="deck-edited">${manipulatedCount} edited</span>`
-        : '');
+  if (!isEmpty) {
+    if (GS.over) {
+      const realCount = polls.filter(p => !p.removed && !p.isFake).length;
+      const fakeCount = polls.filter(p => !p.removed &&  p.isFake).length;
+      badge.innerHTML =
+        (realCount > 0 ? `<span class="deck-real">${realCount} real</span>` : '') +
+        (fakeCount > 0 ? `<span class="deck-fake">${fakeCount} fake</span>` : '');
+    } else {
+      badge.innerHTML =
+        `<span class="deck-count">×${activeCount}</span>` +
+        (manipulatedCount > 0
+          ? `<span class="deck-edited">${manipulatedCount} edited</span>`
+          : '');
+    }
   }
   preview.appendChild(badge);
 
-  // Ranking rows (1. Bob  2. Carol  3. Alice)
+  // Ranking rows
   const rankingEl = document.createElement('div');
   rankingEl.className = 'deck-ranking';
   ranking.forEach((cid, i) => {
     const c   = CAND_BY_ID[cid];
     const row = document.createElement('div');
     row.className = 'deck-rank-row' + (i === 0 ? ' first' : '');
+    const color = isEmpty ? 'var(--border)' : (c?.cssVar || '#aaa');
     row.innerHTML =
       `<span class="deck-rank-num">${i + 1}.</span>` +
-      `<span style="color:${c?.cssVar || '#aaa'}">${c?.name || cid}</span>`;
+      `<span style="color:${color}">${c?.name || cid}</span>`;
     rankingEl.appendChild(row);
   });
   preview.appendChild(rankingEl);
 
-  // Hover hint
-  const hint = document.createElement('div');
-  hint.className = 'deck-hover-hint';
-  hint.textContent = GS.over ? 'hover to reveal' : 'hover to browse';
-  preview.appendChild(hint);
+  // Hover hint (only on non-empty decks)
+  if (!isEmpty) {
+    const hint = document.createElement('div');
+    hint.className = 'deck-hover-hint';
+    hint.textContent = GS.over ? 'click to inspect' : 'hover to browse';
+    preview.appendChild(hint);
+  }
 
   deck.appendChild(preview);
 
-  // ── Scroll container (collapses to 0, expands on hover) ──────────────────
-  const scrollEl = document.createElement('div');
-  scrollEl.className = 'deck-scroll';
-  scrollEl.style.height = '0';
+  // ── Scroll container — omit for empty decks ───────────────────────────────
+  if (!isEmpty) {
+    const scrollEl = document.createElement('div');
+    scrollEl.className = 'deck-scroll';
+    scrollEl.style.height = '0';
 
-  polls.forEach(poll => scrollEl.appendChild(buildPollCard(poll)));
-  deck.appendChild(scrollEl);
+    polls.forEach(poll => scrollEl.appendChild(buildPollCard(poll)));
+    deck.appendChild(scrollEl);
 
-  // Expand on hover; keep open while a card from this deck is selected.
-  // After election, decks stay open and don't collapse.
-  deck.addEventListener('mouseenter', () => {
-    scrollEl.style.height = Math.min(scrollEl.scrollHeight, 380) + 'px';
-  });
-  deck.addEventListener('mouseleave', () => {
-    if (GS.over) return;
-    const hasSelected = polls.some(p => p.id === UI.selectedPollId);
-    if (!hasSelected) scrollEl.style.height = '0';
-  });
+    // Expand on hover with per-card slide-in animation
+    deck.addEventListener('mouseenter', () => {
+      scrollEl.querySelectorAll('.poll-card').forEach((card, i) => {
+        card.style.setProperty('--card-delay', `${i * 38}ms`);
+        card.classList.remove('card-deal-in');
+        void card.offsetWidth; // restart animation
+        card.classList.add('card-deal-in');
+      });
+      scrollEl.style.height = Math.min(scrollEl.scrollHeight, 380) + 'px';
+    });
+
+    // Collapse on leave unless a card in this deck is selected or game is over
+    deck.addEventListener('mouseleave', () => {
+      if (GS.over) return;
+      const hasSelected = polls.some(p => p.id === UI.selectedPollId);
+      if (!hasSelected) scrollEl.style.height = '0';
+    });
+  }
 
   return deck;
+}
+
+/** Render a ranking as colored initials: A › B › C */
+function rankingDots(ranking, muted = false) {
+  return ranking.map(cid => {
+    const c = CAND_BY_ID[cid];
+    const col = muted ? 'var(--muted)' : (c?.color || '#aaa');
+    return `<span style="color:${col};font-weight:700">${c?.name[0] || '?'}</span>`;
+  }).join('<span class="rsep">›</span>');
 }
 
 function buildPollCard(poll) {
@@ -387,36 +536,58 @@ function buildPollCard(poll) {
   });
   card.appendChild(ranking);
 
-  // Post-election reveal overlay
+  // Post-election reveal — show poll ranking vs true ballot
   if (GS.over) {
-    const badge = document.createElement('div');
-    if (poll.isFake) {
-      badge.className = 'reveal-badge fake';
-      badge.textContent = 'FAKE';
-    } else {
-      badge.className = 'reveal-badge real';
-      badge.textContent = 'REAL';
-    }
-    card.appendChild(badge);
+    const reveal = document.createElement('div');
+    reveal.className = 'card-reveal';
 
-    if (poll.wasManipulated) {
-      const eff = document.createElement('div');
-      if (poll.isFake) {
-        eff.className = 'reveal-badge wasted';
-        eff.textContent = '↳ WASTED';
-      } else {
-        eff.className = 'reveal-badge effective';
-        eff.textContent = '↳ EFFECTIVE';
-      }
-      card.appendChild(eff);
+    // Type tags
+    const tags = document.createElement('div');
+    tags.className = 'card-reveal-tags';
+    if (poll.isFake) {
+      tags.innerHTML = '<span class="rtag rtag-fake">FAKE</span>' +
+        (poll.wasManipulated ? '<span class="rtag rtag-wasted">WASTED</span>' : '');
+    } else {
+      tags.innerHTML = '<span class="rtag rtag-real">REAL</span>' +
+        (poll.wasManipulated ? '<span class="rtag rtag-changed">CHANGED</span>' : '');
     }
+    reveal.appendChild(tags);
+
+    // Poll row — what the player saw
+    const pollRow = document.createElement('div');
+    pollRow.className = 'card-reveal-row';
+    pollRow.innerHTML = '<span class="rlabel">poll</span>' + rankingDots(poll.displayedRanking);
+    reveal.appendChild(pollRow);
+
+    // Ballot row — the underlying truth
+    const ballotRow = document.createElement('div');
+    ballotRow.className = 'card-reveal-row';
+    if (poll.isFake) {
+      ballotRow.innerHTML = '<span class="rlabel">ballot</span><span class="rnone">none — fake</span>';
+    } else {
+      const ballot = GS.ballots.find(b => b.id === poll.linkedBallotId);
+      ballotRow.innerHTML = '<span class="rlabel">ballot</span>' +
+        (ballot ? rankingDots(ballot.ranking) : '<span class="rnone">?</span>');
+      // Show original ranking if this ballot was changed
+      if (poll.wasManipulated && ballot) {
+        const origRow = document.createElement('div');
+        origRow.className = 'card-reveal-row muted';
+        origRow.innerHTML = '<span class="rlabel">was</span>' + rankingDots(ballot.originalRanking, true);
+        reveal.appendChild(ballotRow);
+        reveal.appendChild(origRow);
+        card.appendChild(reveal);
+        return card;
+      }
+    }
+    reveal.appendChild(ballotRow);
+    card.appendChild(reveal);
   }
 
-  // Click to select/deselect
+  // Click to select/deselect — no re-animation on mere selection change
   card.addEventListener('click', () => {
     if (GS.over) return;
     UI.selectedPollId = UI.selectedPollId === poll.id ? null : poll.id;
-    renderPollGrid();
+    renderPollGrid(false);
     renderActionPanel();
   });
 
@@ -552,15 +723,45 @@ export function renderBudget() {
 // ── Run / Advance button ──────────────────────────────────────────────────────
 
 function renderRunButton() {
+  // Update reset button label contextually
+  const resetBtn = document.getElementById('reset-btn');
+  if (resetBtn) {
+    if (GS.mode === 'usa' && USA_MAP.view === 'district') {
+      resetBtn.textContent = '← abandon district';
+    } else if (GS.mode === 'usa' && USA_MAP.view === 'map') {
+      resetBtn.textContent = '↺  reset USA map';
+    } else {
+      resetBtn.textContent = '↺  reset game';
+    }
+  }
+
   const btn = document.getElementById('run-btn');
-  if (GS.over) {
-    btn.textContent = '✓ Election Complete';
+
+  if (GS.mode === 'usa' && USA_MAP.view === 'map') {
+    btn.textContent = '← Back (already on map)';
     btn.disabled    = true;
     return;
   }
-  btn.disabled = false;
-  if (GS.mode === 'campaign' && GS.round < CAMPAIGN_ROUNDS.length) {
-    const next = CAMPAIGN_ROUNDS[GS.round]; // 0-indexed: current round is index GS.round-1
+
+  if (GS.over) {
+    if (GS.mode === 'usa') {
+      btn.disabled    = false;
+      btn.textContent = '◀  Return to Map';
+      btn.className   = 'run-btn run-btn-return';
+    } else {
+      btn.textContent = '✓ Election Complete';
+      btn.disabled    = true;
+      btn.className   = 'run-btn';
+    }
+    return;
+  }
+
+  btn.disabled  = false;
+  btn.className = 'run-btn';
+
+  const isCampaignLike = GS.mode === 'campaign' || GS.mode === 'usa';
+  if (isCampaignLike && GS.round < CAMPAIGN_ROUNDS.length) {
+    const next = CAMPAIGN_ROUNDS[GS.round];
     btn.textContent = `▶  Advance to Round ${GS.round + 1} — ${next.name}`;
   } else {
     btn.textContent = '▶  RUN THE TRUE ELECTION';
@@ -581,15 +782,35 @@ export function addLog(msg, type = '') {
 // ── Run election / advance round ──────────────────────────────────────────────
 
 export function handleRunButton() {
+  // Post-election in USA district mode: return to map
+  if (GS.over && GS.mode === 'usa') {
+    returnToMap();
+    document.getElementById('feedback-panel').innerHTML = '';
+    document.getElementById('result-area').innerHTML    = '';
+    document.getElementById('action-log').innerHTML     =
+      '<div class="log-entry">// district complete — select a state to continue</div>';
+    UI.selectedPollId = null;
+    UI.pollPrediction = null;
+    renderAll();
+    return;
+  }
+
   if (GS.over) return;
 
-  if (GS.mode === 'campaign' && GS.round < CAMPAIGN_ROUNDS.length) {
+  const isCampaignLike = GS.mode === 'campaign' || GS.mode === 'usa';
+  if (isCampaignLike && GS.round < CAMPAIGN_ROUNDS.length) {
     addLog(`Round ${GS.round} complete. Advancing to Round ${GS.round + 1}.`, 'info');
     advanceRound();
     UI.selectedPollId = null;
     renderAll();
     return;
   }
+
+  // Snapshot poll prediction before revealing true ballots
+  const predPseudo = GS.polls
+    .filter(p => !p.removed)
+    .map(p => ({ ranking: [...p.displayedRanking], removed: false }));
+  UI.pollPrediction = computeAllMethods(predPseudo);
 
   // Run the election
   const { trueResults, baselineResults } = runElection();
@@ -598,14 +819,28 @@ export function handleRunButton() {
 
   addLog(`TRUE election [${GS.method}]: ${CAND_BY_ID[winner]?.name || winner} wins.`, youWin ? 'good' : 'bad');
 
+  // Save district result before anything else in USA mode
+  if (GS.mode === 'usa') {
+    recordDistrictResult(winner);
+  }
+
   // Show result banner
   const area = document.getElementById('result-area');
   const banner = document.createElement('div');
   banner.className = 'result-banner ' + (youWin ? 'win' : 'lose');
   const winnerName = CAND_BY_ID[winner]?.name || winner;
-  banner.innerHTML = youWin
-    ? `✓ ALICE WINS — manipulation succeeded<div class="result-sub">$${GS.spent} spent across all rounds</div>`
-    : `✗ ${winnerName.toUpperCase()} WINS — Alice lost<div class="result-sub">$${GS.spent} spent · try different tactics</div>`;
+
+  if (GS.mode === 'usa') {
+    const stateName = STATE_BY_ID[USA_MAP.activeStateId]?.name || USA_MAP.activeStateId;
+    const di = USA_MAP.districtIndex + 1;
+    banner.innerHTML = youWin
+      ? `✓ ALICE WINS — ${stateName} District ${di}<div class="result-sub">click ◀ Return to Map to continue</div>`
+      : `✗ ${winnerName.toUpperCase()} WINS — ${stateName} District ${di}<div class="result-sub">click ◀ Return to Map to continue</div>`;
+  } else {
+    banner.innerHTML = youWin
+      ? `✓ ALICE WINS — manipulation succeeded<div class="result-sub">$${GS.spent} spent across all rounds</div>`
+      : `✗ ${winnerName.toUpperCase()} WINS — Alice lost<div class="result-sub">$${GS.spent} spent · try different tactics</div>`;
+  }
   area.innerHTML = '';
   area.appendChild(banner);
 
@@ -616,14 +851,568 @@ export function handleRunButton() {
   renderFeedback(GS, trueResults, baselineResults);
 }
 
+// ── Live results preview ──────────────────────────────────────────────────────
+//
+// Always visible. During game: computed from poll display rankings (prediction).
+// After election:  computed from true manipulated ballots (ground truth).
+
+function renderResultsPreview() {
+  const el = document.getElementById('results-preview');
+  if (!el) return;
+  el.innerHTML = '';
+
+  let pluralityResult, bordaResult, irvResult, rankBallots, isLive;
+
+  if (GS.over && GS.trueResults) {
+    pluralityResult = GS.trueResults.plurality;
+    bordaResult     = GS.trueResults.borda;
+    irvResult       = GS.trueResults.irv;
+    rankBallots     = GS.ballots.filter(b => !b.removed);
+    isLive          = false;
+  } else {
+    const pseudo    = GS.polls
+      .filter(p => !p.removed)
+      .map(p => ({ ranking: [...p.displayedRanking], removed: false }));
+    const res       = computeAllMethods(pseudo);
+    pluralityResult = res.plurality;
+    bordaResult     = res.borda;
+    irvResult       = res.irv;
+    rankBallots     = pseudo;
+    isLive          = true;
+  }
+
+  const pred = UI.pollPrediction;  // null during game, set after election
+
+  el.appendChild(buildPluralityPanel(rankBallots, pluralityResult, isLive, pred?.plurality));
+  el.appendChild(buildBordaPanel(rankBallots, bordaResult, isLive, pred?.borda));
+  el.appendChild(buildIRVPanel(irvResult, isLive, pred?.irv));
+}
+
+function buildPluralityPanel(ballots, result, isLive, predResult) {
+  const panel = document.createElement('div');
+  panel.className = 'preview-panel' + (isLive ? ' live' : ' final');
+
+  const hdr = document.createElement('div');
+  hdr.className = 'preview-panel-hdr';
+  hdr.innerHTML =
+    `<span class="preview-panel-title">Plurality</span>` +
+    `<span class="preview-tag ${isLive ? 'tag-live' : 'tag-final'}">${isLive ? 'poll estimate' : 'true result'}</span>`;
+  panel.appendChild(hdr);
+
+  const sub = document.createElement('div');
+  sub.className = 'preview-sub';
+  sub.textContent = 'Candidate with the most first-choice votes wins.';
+  panel.appendChild(sub);
+
+  const total = ballots.length || 1;
+  const counts = {};
+  CANDIDATES.forEach(c => { counts[c.id] = 0; });
+  for (const b of ballots) {
+    if (b.ranking && b.ranking[0]) counts[b.ranking[0]] = (counts[b.ranking[0]] || 0) + 1;
+  }
+
+  const sorted = [...CANDIDATES].sort(
+    (a, b) => (result.scores[b.id] || 0) - (result.scores[a.id] || 0)
+  );
+
+  sorted.forEach((cand, si) => {
+    const count    = counts[cand.id] || 0;
+    const pct      = (count / total * 100).toFixed(1);
+    const isWinner = cand.id === result.winner;
+    const predCount = (!isLive && predResult) ? (predResult.scores[cand.id] ?? '?') : null;
+
+    const row = document.createElement('div');
+    row.className = 'plurality-cand-row' + (isWinner ? ' plurality-winner' : '');
+    row.style.setProperty('--plur-delay', `${si * 100}ms`);
+    row.style.setProperty('--plur-bar-w', pct + '%');
+    row.style.setProperty('--plur-color', cand.color);
+
+    const rowHdr = document.createElement('div');
+    rowHdr.className = 'plurality-cand-header';
+    const predTag = predCount !== null
+      ? `<span class="pred-was">est: ${predCount}</span>`
+      : '';
+    rowHdr.innerHTML =
+      `<span class="plurality-cand-name" style="color:${cand.cssVar}">${cand.name}${isWinner ? ' ★' : ''}</span>` +
+      `<span class="plurality-score" style="color:${cand.cssVar}">${count}<span class="plurality-pct"> (${pct}%)</span></span>${predTag}`;
+    row.appendChild(rowHdr);
+
+    const track = document.createElement('div');
+    track.className = 'plurality-bar-track';
+    const fill = document.createElement('div');
+    fill.className = 'plurality-bar-fill';
+    fill.style.background = cand.color;
+    track.appendChild(fill);
+    row.appendChild(track);
+
+    panel.appendChild(row);
+  });
+
+  if (!isLive && predResult) {
+    panel.appendChild(buildPredCompare(predResult, result));
+  }
+
+  return panel;
+}
+
+/** Builds the prediction-vs-truth row shown at the bottom of post-election panels. */
+function buildPredCompare(predResult, trueResult) {
+  const predC = CAND_BY_ID[predResult.winner];
+  const trueC = CAND_BY_ID[trueResult.winner];
+  const match = predResult.winner === trueResult.winner;
+  const el = document.createElement('div');
+  el.className = 'pred-compare';
+  el.innerHTML =
+    `<span class="pred-label">Polls predicted:</span> ` +
+    `<span style="color:${predC?.cssVar || '#aaa'}">${predC?.name || predResult.winner}</span>` +
+    `<span class="pred-sep">·</span>` +
+    `<span class="pred-label">True:</span> ` +
+    `<span style="color:${trueC?.cssVar || '#aaa'}">${trueC?.name || trueResult.winner}</span>` +
+    `<span class="${match ? 'pred-correct' : 'pred-wrong'}">${match ? '✓ match' : '✗ off'}</span>`;
+  return el;
+}
+
+function buildBordaPanel(ballots, result, isLive, predResult) {
+  const panel = document.createElement('div');
+  panel.className = 'preview-panel' + (isLive ? ' live' : ' final');
+
+  // Header
+  const hdr = document.createElement('div');
+  hdr.className = 'preview-panel-hdr';
+  hdr.innerHTML =
+    `<span class="preview-panel-title">Borda Count</span>` +
+    `<span class="preview-tag ${isLive ? 'tag-live' : 'tag-final'}">${isLive ? 'poll estimate' : 'true result'}</span>`;
+  panel.appendChild(hdr);
+
+  const sub = document.createElement('div');
+  sub.className = 'preview-sub';
+  sub.innerHTML = '1st = <strong>2 pts</strong> · 2nd = <strong>1 pt</strong> · 3rd = 0 pts — highest total wins';
+  panel.appendChild(sub);
+
+  // Compute rank distributions
+  const maxPts = ballots.length * 2 || 1;
+  const rc = {};
+  CANDIDATES.forEach(c => { rc[c.id] = { r1: 0, r2: 0, r3: 0 }; });
+  for (const b of ballots) {
+    b.ranking.forEach((cid, i) => {
+      if (i === 0) rc[cid].r1++;
+      else if (i === 1) rc[cid].r2++;
+      else rc[cid].r3++;
+    });
+  }
+
+  const sorted = [...CANDIDATES].sort(
+    (a, b) => (result.scores[b.id] || 0) - (result.scores[a.id] || 0)
+  );
+
+  // Pre-compute poll-estimated rank distributions for comparison
+  const predRc = {};
+  if (!isLive && predResult) {
+    CANDIDATES.forEach(c => { predRc[c.id] = { r1: 0, r2: 0, r3: 0 }; });
+    // Re-derive from poll pseudo-ballots: not stored, but predResult.scores gives totals.
+    // We can't reconstruct r1/r2/r3 from scores alone, so just use predResult.scores for the header.
+  }
+
+  sorted.forEach((cand, si) => {
+    const score     = result.scores[cand.id] || 0;
+    const predScore = (!isLive && predResult) ? (predResult.scores[cand.id] ?? '?') : null;
+    const r         = rc[cand.id];
+    const r1w       = ((r.r1 * 2) / maxPts * 100).toFixed(1);
+    const r2w       = (r.r2 / maxPts * 100).toFixed(1);
+    const isWinner  = cand.id === result.winner;
+
+    const row = document.createElement('div');
+    row.className = 'borda-cand-row' + (isWinner ? ' borda-winner' : '');
+    row.style.setProperty('--borda-delay', `${si * 120}ms`);
+    row.style.setProperty('--borda-r1-w', r1w + '%');
+    row.style.setProperty('--borda-r2-w', r2w + '%');
+
+    const rowHdr = document.createElement('div');
+    rowHdr.className = 'borda-cand-header';
+    const predTag = predScore !== null
+      ? `<span class="pred-was">est: ${predScore} pts</span>`
+      : '';
+    rowHdr.innerHTML =
+      `<span class="borda-cand-name" style="color:${cand.cssVar}">${cand.name}${isWinner ? ' ★' : ''}</span>` +
+      `<span style="display:flex;align-items:baseline;gap:0">` +
+      `<span class="borda-score" style="color:${cand.cssVar}">${score} pts</span>${predTag}</span>`;
+    row.appendChild(rowHdr);
+
+    const track = document.createElement('div');
+    track.className = 'borda-bar-track';
+    const s1 = document.createElement('div');
+    s1.className = 'borda-bar-rank1';
+    s1.style.background = cand.color;
+    const s2 = document.createElement('div');
+    s2.className = 'borda-bar-rank2';
+    s2.style.background = cand.color + '70';
+    track.appendChild(s1);
+    track.appendChild(s2);
+    row.appendChild(track);
+
+    const bd = document.createElement('div');
+    bd.className = 'borda-breakdown';
+    bd.innerHTML =
+      `<span style="color:${cand.color}">${r.r1}×2</span> + ` +
+      `<span style="color:${cand.color}99">${r.r2}×1</span> + ` +
+      `<span class="borda-zero">${r.r3}×0</span> = ${score} pts`;
+    row.appendChild(bd);
+
+    panel.appendChild(row);
+  });
+
+  if (!isLive && predResult) {
+    panel.appendChild(buildPredCompare(predResult, result));
+  }
+
+  return panel;
+}
+
+function buildIRVPanel(irvResult, isLive, predResult) {
+  const panel = document.createElement('div');
+  panel.className = 'preview-panel' + (isLive ? ' live' : ' final');
+
+  const hdr = document.createElement('div');
+  hdr.className = 'preview-panel-hdr';
+  hdr.innerHTML =
+    `<span class="preview-panel-title">IRV — Instant Runoff</span>` +
+    `<span class="preview-tag ${isLive ? 'tag-live' : 'tag-final'}">${isLive ? 'poll estimate' : 'true result'}</span>`;
+  panel.appendChild(hdr);
+
+  const sub = document.createElement('div');
+  sub.className = 'preview-sub';
+  sub.textContent = 'Lowest candidate eliminated each round. Their votes transfer to next choice.';
+  panel.appendChild(sub);
+
+  const allCounts = irvResult.steps.flatMap(s => Object.values(s.counts));
+  const maxVotes  = Math.max(...allCounts, 1);
+
+  const roundsEl = document.createElement('div');
+  roundsEl.className = 'irv-rounds-viz';
+
+  irvResult.steps.forEach((step, si) => {
+    const roundDelay = si * 500;
+    const totalVotes = Object.values(step.counts).reduce((a, b) => a + b, 0);
+    const majority   = Math.floor(totalVotes / 2) + 1;
+    // Find the matching predicted step by round number (may not exist if poll had fewer rounds)
+    const predStep = (!isLive && predResult)
+      ? (predResult.steps ?? []).find(s => s.round === step.round)
+      : null;
+
+    const col = document.createElement('div');
+    col.className = 'irv-round-viz-col';
+
+    const heading = document.createElement('div');
+    heading.className = 'irv-round-viz-heading';
+    heading.textContent = `Round ${step.round}`;
+    col.appendChild(heading);
+
+    const barsEl = document.createElement('div');
+    barsEl.className = 'irv-round-bars';
+
+    CANDIDATES.forEach((cand, ci) => {
+      const isAlive    = step.alive.includes(cand.id);
+      const isElim     = step.eliminated === cand.id;
+      const isWinner   = step.winner === cand.id;
+      const alreadyOut = !isAlive && !isElim;
+      const count      = step.counts[cand.id] ?? 0;
+      const barPct     = alreadyOut ? '0' : (count / maxVotes * 100).toFixed(1);
+      const predCount  = predStep ? (predStep.counts[cand.id] ?? null) : null;
+
+      const candRow = document.createElement('div');
+      candRow.className = [
+        'irv-cand-bar-row',
+        isElim     ? 'irv-being-eliminated' : '',
+        isWinner   ? 'irv-round-winner'     : '',
+        alreadyOut ? 'irv-already-out'      : '',
+      ].filter(Boolean).join(' ');
+      candRow.style.setProperty('--irv-color', cand.color);
+      candRow.style.setProperty('--irv-bar-w', barPct + '%');
+      candRow.style.setProperty('--irv-delay', `${roundDelay + ci * 90}ms`);
+
+      const nameEl = document.createElement('div');
+      nameEl.className = 'irv-cand-name';
+      nameEl.style.color = alreadyOut ? 'var(--border)' : cand.color;
+      nameEl.textContent = cand.name;
+      candRow.appendChild(nameEl);
+
+      const trackEl = document.createElement('div');
+      trackEl.className = 'irv-bar-track';
+      const fillEl = document.createElement('div');
+      fillEl.className = 'irv-bar-fill';
+      trackEl.appendChild(fillEl);
+      candRow.appendChild(trackEl);
+
+      const countEl = document.createElement('div');
+      countEl.className = 'irv-bar-count';
+      countEl.style.color = alreadyOut ? 'var(--border)' : 'var(--text)';
+      if (alreadyOut) {
+        countEl.textContent = '—';
+      } else if (predCount !== null) {
+        countEl.innerHTML = `${count}<span class="pred-was">${predCount}</span>`;
+      } else {
+        countEl.textContent = String(count);
+      }
+      candRow.appendChild(countEl);
+
+      if (isElim) {
+        const b = document.createElement('span');
+        b.className = 'irv-status-badge irv-elim-badge';
+        b.textContent = '✕ out';
+        candRow.appendChild(b);
+      } else if (isWinner) {
+        const b = document.createElement('span');
+        b.className = 'irv-status-badge irv-winner-badge';
+        b.textContent = '★ wins';
+        candRow.appendChild(b);
+      }
+
+      barsEl.appendChild(candRow);
+    });
+
+    col.appendChild(barsEl);
+
+    const thresh = document.createElement('div');
+    thresh.className = 'irv-threshold-note';
+    thresh.textContent = `majority: ${majority} votes`;
+    col.appendChild(thresh);
+
+    if (step.eliminated) {
+      const c = CAND_BY_ID[step.eliminated];
+      const redist = document.createElement('div');
+      redist.className = 'irv-redist-note';
+      redist.innerHTML = `↳ <strong>${c?.name}'s</strong> votes transfer →`;
+      col.appendChild(redist);
+    }
+
+    roundsEl.appendChild(col);
+
+    if (si < irvResult.steps.length - 1) {
+      const arrow = document.createElement('div');
+      arrow.className = 'irv-round-arrow';
+      arrow.textContent = '→';
+      roundsEl.appendChild(arrow);
+    }
+  });
+
+  panel.appendChild(roundsEl);
+
+  if (!isLive && predResult) {
+    panel.appendChild(buildPredCompare(predResult, irvResult));
+  }
+
+  return panel;
+}
+
+// ── USA Map rendering ─────────────────────────────────────────────────────────
+
+function renderUSAMap() {
+  renderUSAScoreboard();
+  renderUSAGrid();
+  renderUSAStatus();
+  renderUSABreadcrumb();
+}
+
+function renderUSAScoreboard() {
+  const el = document.getElementById('usa-scoreboard');
+  if (!el) return;
+  el.innerHTML = '';
+
+  const scores  = nationalScores(USA_MAP.results);
+  const leader  = nationalLeader(USA_MAP.results);
+  const total   = STATES.length;
+  const played  = total - scores.unplayed;
+
+  CANDIDATES.forEach(c => {
+    const count = scores[c.id] || 0;
+    const pct   = total > 0 ? (count / total * 100).toFixed(0) : 0;
+    const isLeading = c.id === leader;
+
+    const item = document.createElement('div');
+    item.className = 'usa-score-item';
+
+    const dot = document.createElement('span');
+    dot.className   = 'usa-score-dot';
+    dot.style.background = c.color;
+
+    const nameEl = document.createElement('span');
+    nameEl.className = 'usa-score-name';
+    nameEl.style.color = c.cssVar;
+    nameEl.textContent = c.name;
+
+    const countEl = document.createElement('span');
+    countEl.className = 'usa-score-count';
+    countEl.style.color = c.cssVar;
+    countEl.textContent = String(count);
+
+    const labelEl = document.createElement('span');
+    labelEl.className = 'usa-score-label';
+    labelEl.textContent = 'states';
+
+    const track = document.createElement('div');
+    track.className = 'usa-score-bar-track';
+    const fill = document.createElement('div');
+    fill.className   = 'usa-score-bar-fill';
+    fill.style.background = c.color;
+    fill.style.width      = pct + '%';
+    track.appendChild(fill);
+
+    item.appendChild(dot);
+    item.appendChild(nameEl);
+    item.appendChild(countEl);
+    item.appendChild(labelEl);
+    item.appendChild(track);
+
+    if (isLeading && count > 0) {
+      const tag = document.createElement('span');
+      tag.className   = 'usa-leader-tag';
+      tag.textContent = 'leading';
+      item.appendChild(tag);
+    }
+
+    el.appendChild(item);
+  });
+
+  // Progress indicator
+  if (played > 0) {
+    const prog = document.createElement('div');
+    prog.style.cssText = 'font-size:9px;font-family:"DM Mono",monospace;color:var(--muted);margin-left:auto;white-space:nowrap;';
+    prog.textContent   = `${played}/${total} states played`;
+    el.appendChild(prog);
+  }
+}
+
+function renderUSAGrid() {
+  const grid = document.getElementById('usa-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  STATES.forEach(state => {
+    const results    = USA_MAP.results[state.id] ?? [];
+    const played     = results.filter(w => w != null).length;
+    const allPlayed  = played === state.districts;
+    const winner     = stateWinner(results);
+    const isActive   = USA_MAP.activeStateId === state.id && USA_MAP.view === 'district';
+
+    const tile = document.createElement('div');
+    tile.className = [
+      'state-tile',
+      winner    ? winner + '-lead' : '',
+      allPlayed ? 'all-played'     : '',
+      played > 0 && !allPlayed ? 'partial' : '',
+      isActive  ? 'active-district' : '',
+    ].filter(Boolean).join(' ');
+
+    tile.style.gridRow    = state.row;
+    tile.style.gridColumn = state.col;
+    tile.title = `${state.name} (${played}/${state.districts} districts played)`;
+
+    const abbr = document.createElement('div');
+    abbr.className   = 'state-tile-abbr';
+    abbr.textContent = state.id;
+    tile.appendChild(abbr);
+
+    // District progress dots (only if multi-district)
+    if (state.districts > 1) {
+      const dots = document.createElement('div');
+      dots.className = 'state-tile-dots';
+      for (let i = 0; i < state.districts; i++) {
+        const dot = document.createElement('div');
+        const w   = results[i];
+        dot.className = 'state-dot' + (w ? ' ' + w : ' empty');
+        dots.appendChild(dot);
+      }
+      tile.appendChild(dots);
+    }
+
+    // Click: start next unplayed district
+    if (!allPlayed) {
+      tile.addEventListener('click', () => {
+        if (!startDistrict(state.id, state.districts)) return;
+        initGame('usa');
+        UI.selectedPollId = null;
+        UI.pollPrediction = null;
+        document.getElementById('feedback-panel').innerHTML = '';
+        document.getElementById('result-area').innerHTML    = '';
+        document.getElementById('action-log').innerHTML =
+          `<div class="log-entry">// ${state.name} — District ${USA_MAP.districtIndex + 1} · manipulate polls to win · not all polls are real</div>`;
+        renderAll();
+      });
+    }
+
+    grid.appendChild(tile);
+  });
+}
+
+function renderUSAStatus() {
+  const el = document.getElementById('usa-status');
+  if (!el) return;
+  const leader = nationalLeader(USA_MAP.results);
+  const scores = nationalScores(USA_MAP.results);
+  if (!leader) {
+    el.textContent = 'Click any state to begin playing its district(s). Win districts to capture states.';
+  } else {
+    const c = CAND_BY_ID[leader];
+    el.innerHTML =
+      `<span style="color:${c?.cssVar}">${c?.name}</span> leads with ${scores[leader]} state${scores[leader] !== 1 ? 's' : ''} · ` +
+      `${scores.unplayed} state${scores.unplayed !== 1 ? 's' : ''} remaining`;
+  }
+}
+
+function renderUSABreadcrumb() {
+  // Show a district breadcrumb above the game when playing a district in USA mode
+  const existing = document.getElementById('district-breadcrumb');
+  if (existing) existing.remove();
+
+  if (GS.mode !== 'usa' || USA_MAP.view !== 'district') return;
+
+  const state = STATE_BY_ID[USA_MAP.activeStateId];
+  if (!state) return;
+
+  const bc = document.createElement('div');
+  bc.id        = 'district-breadcrumb';
+  bc.className = 'district-breadcrumb';
+  bc.innerHTML =
+    `<span>USA Map</span><span class="bc-sep">›</span>` +
+    `<strong>${state.name}</strong><span class="bc-sep">›</span>` +
+    `District ${USA_MAP.districtIndex + 1} of ${state.districts}` +
+    `<span style="margin-left:auto;opacity:0.5">Plurality · 3 rounds</span>`;
+
+  const mainLayout = document.querySelector('.main-layout');
+  mainLayout?.parentNode.insertBefore(bc, mainLayout);
+}
+
 // ── Reset ─────────────────────────────────────────────────────────────────────
 
 export function handleReset() {
+  // In USA district view: abandon district and return to map
+  if (GS.mode === 'usa' && USA_MAP.view === 'district') {
+    returnToMap();
+    document.getElementById('feedback-panel').innerHTML = '';
+    document.getElementById('result-area').innerHTML    = '';
+    document.getElementById('action-log').innerHTML     =
+      '<div class="log-entry">// returned to map — district abandoned</div>';
+    UI.selectedPollId = null;
+    UI.pollPrediction = null;
+    renderAll();
+    return;
+  }
+
+  // In USA map view: reset the entire USA campaign
+  if (GS.mode === 'usa' && USA_MAP.view === 'map') {
+    initUSAMode();
+    document.getElementById('result-area').innerHTML = '';
+    renderAll();
+    return;
+  }
+
+  // Normal modes
   const mode = GS.mode;
   initGame(mode);
   UI.selectedPollId = null;
+  UI.pollPrediction = null;
 
-  document.getElementById('result-area').innerHTML = '';
+  document.getElementById('result-area').innerHTML    = '';
   document.getElementById('feedback-panel').innerHTML = '';
   document.getElementById('action-log').innerHTML =
     '<div class="log-entry">// game reset — Bob leads, manipulate to help Alice win</div>';

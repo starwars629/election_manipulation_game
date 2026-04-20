@@ -1,6 +1,6 @@
 'use strict';
 
-import { CAND_BY_ID, CANDIDATES } from './models.js';
+import { CAND_BY_ID, CANDIDATES } from './models.js'; // CANDIDATES used in results table
 import { CAMPAIGN_ROUNDS }        from './gameState.js';
 
 // ── Endgame feedback panel ────────────────────────────────────────────────────
@@ -21,7 +21,6 @@ export function renderFeedback(gs, trueResults, baselineResults) {
   panel.appendChild(buildResultsTable(gs, trueResults));
   panel.appendChild(buildPerformanceStats(gs));
   panel.appendChild(buildBaselineComparison(gs, trueResults, baselineResults));
-  panel.appendChild(buildIRVWalkthrough(trueResults.irv));
   panel.appendChild(buildSystemComparison(trueResults));
 }
 
@@ -133,42 +132,6 @@ function buildBaselineComparison(gs, trueResults, baselineResults) {
   note.className = 'baseline-note';
   note.innerHTML = `<em>Without any manipulation, the original result was:</em><br>${rows}`;
   sec.appendChild(note);
-  return sec;
-}
-
-// ── IRV walkthrough ───────────────────────────────────────────────────────────
-
-function buildIRVWalkthrough(irvResult) {
-  const sec = section('IRV Walkthrough — Step by Step');
-
-  const note = document.createElement('div');
-  note.className = 'irv-note';
-  note.innerHTML = '<em>"Borda rewards consistent ranking, not just first-place votes."</em>';
-  sec.appendChild(note);
-
-  irvResult.steps.forEach(step => {
-    const stepEl = document.createElement('div');
-    stepEl.className = 'irv-step';
-
-    const candEntries = step.alive.map(cid => {
-      const c = CAND_BY_ID[cid];
-      const n = step.counts[cid] ?? 0;
-      return `<span style="color:${c?.cssVar || '#aaa'}">${c?.name || cid}=${n}</span>`;
-    }).join('  ');
-
-    let action = '';
-    if (step.winner) {
-      const c = CAND_BY_ID[step.winner];
-      action = `<span class="irv-winner">→ ${c?.name || step.winner} wins with majority</span>`;
-    } else if (step.eliminated) {
-      const c = CAND_BY_ID[step.eliminated];
-      action = `<span class="irv-elim">→ ${c?.name || step.eliminated} eliminated</span>`;
-    }
-
-    stepEl.innerHTML = `<span class="irv-round">Round ${step.round}:</span> ${candEntries} ${action}`;
-    sec.appendChild(stepEl);
-  });
-
   return sec;
 }
 

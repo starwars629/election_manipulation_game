@@ -31,6 +31,13 @@
     <div id="method-desc" class="method-desc"></div>
   </div>
 
+  <!-- ── USA map view (shown when mode = usa + view = map) ── -->
+  <div id="usa-map-view" class="usa-map-view" style="display:none">
+    <div id="usa-scoreboard" class="usa-scoreboard"></div>
+    <div id="usa-grid" class="usa-grid"></div>
+    <div id="usa-status" class="usa-status"></div>
+  </div>
+
   <!-- ── Main layout: poll grid + side panel ── -->
   <div class="main-layout">
 
@@ -42,6 +49,7 @@
         <span class="poll-hint">click a card to select · fake polls waste your budget</span>
       </div>
       <div id="poll-standings"></div>
+      <div id="deck-headers" class="deck-headers"></div>
       <div class="poll-grid" id="poll-grid"></div>
     </div>
 
@@ -76,6 +84,9 @@
 
     </div>
   </div>
+
+  <!-- ── Live results preview (Borda + IRV) ── -->
+  <div id="results-preview" class="results-preview-wrap"></div>
 
   <!-- ── Feedback panel (hidden until election runs) ── -->
   <div id="feedback-panel" class="feedback-panel hidden"></div>
