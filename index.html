@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VOTE.EXE — Election Manipulation</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="scanline"></div>
+<div class="shell">
+
+  <!-- ── Header ── -->
+  <header class="header">
+    <div>
+      <div class="title">VOTE.EXE — <span>Election Manipulation</span></div>
+      <div class="subtitle">Playing as <strong>Alice</strong> · manipulate polls to win · not all polls are real</div>
+    </div>
+    <div id="result-area"></div>
+  </header>
+
+  <!-- ── Controls row ── -->
+  <div class="controls-row">
+    <div id="mode-selector" class="mode-selector"></div>
+    <div id="round-accuracy" class="round-accuracy"></div>
+    <div id="method-selector" class="method-selector"></div>
+    <div id="hud-leader" class="hud-leader"></div>
+  </div>
+  <div class="method-desc-row">
+    <div id="method-desc" class="method-desc"></div>
+  </div>
+
+  <!-- ── Main layout: poll grid + side panel ── -->
+  <div class="main-layout">
+
+    <!-- Poll grid -->
+    <div class="poll-section">
+      <div class="section-label">
+        Poll Cards
+        <span id="poll-count-label" class="poll-count-label"></span>
+        <span class="poll-hint">click a card to select · fake polls waste your budget</span>
+      </div>
+      <div id="poll-standings"></div>
+      <div class="poll-grid" id="poll-grid"></div>
+    </div>
+
+    <!-- Side panel: action panel + budget + log -->
+    <div class="side-panel">
+
+      <div class="sel-panel empty" id="sel-panel">
+        <div class="sel-head empty-h" id="sel-head">No card selected</div>
+        <div id="sel-body">
+          <div class="no-sel">
+            <span class="arrow-hint">←</span>
+            Click a poll card to select it,<br>then choose a manipulation action.
+          </div>
+        </div>
+      </div>
+
+      <div class="panel budget-panel">
+        <div class="panel-title">Budget</div>
+        <div class="budget-big" id="budget-big" style="color:var(--success)">$1000</div>
+        <div class="budget-track">
+          <div class="budget-fill" id="budget-fill" style="width:100%;background:var(--success)"></div>
+        </div>
+        <div class="budget-sub" id="budget-sub">$0 spent</div>
+      </div>
+
+      <div class="panel log-panel">
+        <div class="panel-title">Action Log</div>
+        <div class="log" id="action-log">
+          <div class="log-entry">// game start — Bob leads, manipulate to help Alice win</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ── Feedback panel (hidden until election runs) ── -->
+  <div id="feedback-panel" class="feedback-panel hidden"></div>
+
+  <!-- ── Buttons ── -->
+  <button class="run-btn" id="run-btn">▶  RUN THE TRUE ELECTION</button>
+  <button class="reset-btn" id="reset-btn">↺  reset game</button>
+
+</div>
+<script type="module" src="src/main.js"></script>
+</body>
+</html>
